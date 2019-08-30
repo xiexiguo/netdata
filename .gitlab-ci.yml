@@ -6,7 +6,7 @@ Validations:
   stage: "Code quality, linting, syntax, code style"
   before_script:
     - apt-get clean all && apt-get update
-    - apt-get install -y shellcheck curl sudo
+    - apt-get install -y shellcheck
   script:
     - shellcheck --format=gcc $(find . -name '*.sh.in' -not -iwholename '*.git*')
     - ./tests/installer/checksums.sh
@@ -16,6 +16,7 @@ Validations:
 job 3:
   stage: "Verify package install"
   before_script:
+    - apt-get install -y sudo curl
     - curl -s https://packagecloud.io/install/repositories/netdata/netdata-devel/script.deb.sh | sudo bash
   script:
     - apt-get install -y netdata
