@@ -1,19 +1,22 @@
 stages:
   - "Code quality, linting, syntax, code style"
 
-job 1:
+Validations:
   stage: "Code quality, linting, syntax, code style"
   before_script:
     - apt-get clean all && apt-get update
-    - apt-get install -y shellcheck
-  script: shellcheck --format=gcc $(find . -name '*.sh.in' -not -iwholename '*.git*')
-
-job 2:
-  stage: "Code quality, linting, syntax, code style"
-  script: ./tests/installer/checksums.sh
+    - apt-get install -y shellcheck curl
+  script:
+    - shellcheck --format=gcc $(find . -name '*.sh.in' -not -iwholename '*.git*')
+    - ./tests/installer/checksums.sh
   variables:
     LOCAL_ONLY: "true"
 
 job 3:
-  stage: "Code quality, linting, syntax, code style"
-  script: cp web/gui/dashboard.js /tmp/dashboard.js && ./build/build.sh && diff /tmp/dashboard.js web/gui/dashboard.js
+  stage: "Verify package install"
+  before_script:
+    - curl -s https://packagecloud.io/install/repositories/netdata/netdata-devel/script.deb.sh | sudo bash
+  script:
+    - apt-get install -y netdata
+    - curl -s http://localhost:19999/api/v1/info | grep version || (echo "Service not started" && exit 1)
+    - apt-get remove -y netdata
