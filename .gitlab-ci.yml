@@ -6,7 +6,7 @@ Validations:
   stage: "Code quality, linting, syntax, code style"
   before_script:
     - apt-get clean all && apt-get update
-    - apt-get install -y shellcheck curl
+    - apt-get install -y shellcheck curl sudo
   script:
     - shellcheck --format=gcc $(find . -name '*.sh.in' -not -iwholename '*.git*')
     - ./tests/installer/checksums.sh
