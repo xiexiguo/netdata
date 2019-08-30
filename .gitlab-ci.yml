@@ -1,5 +1,6 @@
 stages:
   - "Code quality, linting, syntax, code style"
+  - "Verify package install"
 
 Validations:
   stage: "Code quality, linting, syntax, code style"
