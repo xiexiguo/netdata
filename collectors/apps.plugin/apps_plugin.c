@@ -2451,7 +2451,8 @@ static inline void link_all_processes_to_their_parents(void) {
         p->parent = NULL;
 
         if(unlikely(!p->ppid)) {
-            p->parent = NULL;
+            //unnecessary code from apps_plugin.c
+            //p->parent = NULL;
             continue;
         }
 
@@ -4110,8 +4111,6 @@ int main(int argc, char **argv) {
 
     procfile_adaptive_initial_allocation = 1;
 
-    time_t started_t = now_monotonic_sec();
-
     get_system_HZ();
 #ifdef __FreeBSD__
     time_factor = 1000000ULL / RATES_DETAIL; // FreeBSD uses usecs
@@ -4173,6 +4172,12 @@ int main(int argc, char **argv) {
         usec_t dt = heartbeat_next(&hb, step);
 #endif
 
+        struct pollfd pollfd = { .fd = fileno(stdout), .events = POLLERR };
+        if (unlikely(poll(&pollfd, 1, 0) < 0))
+            fatal("Cannot check if a pipe is available");
+        if (unlikely(pollfd.revents & POLLERR))
+            fatal("Cannot write to a pipe");
+
         if(!collect_data_for_all_processes()) {
             error("Cannot collect /proc data for running processes. Disabling apps.plugin...");
             printf("DISABLE\n");
@@ -4206,8 +4211,5 @@ int main(int argc, char **argv) {
         show_guest_time_old = show_guest_time;
 
         debug_log("done Loop No %zu", global_iterations_counter);
-
-        // restart check (14400 seconds)
-        if(now_monotonic_sec() - started_t > 14400) exit(0);
     }
 }

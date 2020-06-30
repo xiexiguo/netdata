@@ -1,4 +1,14 @@
+<!--
+---
+title: "Metrics long term archiving"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/backends/README.md
+---
+-->
+
 # Metrics long term archiving
+
+> ⚠️ The backends system is now deprecated in favor of the [exporting engine](/exporting/README.md). Please see the
+> [migration guide](/docs/export/) for details on how to get started with exporting.
 
 Netdata supports backends for archiving the metrics, or providing long term dashboards, using Grafana or other tools,
 like this:
@@ -29,7 +39,8 @@ So, although Netdata collects metrics every second, it can send to the backend s
 
         metrics are sent to a document db, `JSON` formatted.
 
-    -   **prometheus** is described at [prometheus page](prometheus/) since it pulls data from Netdata.
+    -   **prometheus** is described at [prometheus page](/backends/prometheus/README.md) since it pulls data from
+        Netdata.
 
     -   **prometheus remote write** (a binary snappy-compressed protocol buffer encoding over HTTP used by
         **Elasticsearch**, **Gnocchi**, **Graphite**, **InfluxDB**, **Kafka**, **OpenTSDB**, **PostgreSQL/TimescaleDB**,
@@ -37,10 +48,10 @@ So, although Netdata collects metrics every second, it can send to the backend s
         providers](https://prometheus.io/docs/operating/integrations/#remote-endpoints-and-storage))
 
         metrics are labeled in the format, which is used by Netdata for the [plaintext prometheus
-        protocol](prometheus/). Notes on using the remote write backend are [here](prometheus/remote_write/).
+        protocol](/backends/prometheus/README.md). Notes on using the remote write backend are [here](/backends/prometheus/remote_write/README.md).
 
-    -   ****TimescaleDB** via [community-built connector](TIMESCALE.md) that takes JSON streams from a Netdata client
-        and writes them to a TimescaleDB table.
+    -   **TimescaleDB** via [community-built connector](/backends/TIMESCALE.md) that takes JSON streams from a Netdata
+        client and writes them to a TimescaleDB table.
 
     -   **AWS Kinesis Data Streams**
 
@@ -136,14 +147,14 @@ from your Netdata):
    When multiple servers are defined, Netdata will try the next one when the first one fails. This allows you to
    load-balance different servers: give your backend servers in different order on each Netdata.
 
-   Netdata also ships [`nc-backend.sh`](nc-backend.sh), a script that can be used as a fallback backend to save the
+   Netdata also ships `nc-backend.sh`, a script that can be used as a fallback backend to save the
    metrics to disk and push them to the time-series database when it becomes available again. It can also be used to
    monitor / trace / debug the metrics Netdata generates.
 
    For kinesis backend `destination` should be set to an AWS region (for example, `us-east-1`).
 
    The MongoDB backend doesn't use the `destination` option for its configuration. It uses the `mongodb.conf`
-   [configuration file](../backends/mongodb/) instead.
+   [configuration file](/backends/mongodb/README.md) instead.
 
 -   `data source = as collected`, or `data source = average`, or `data source = sum`, selects the kind of data that will
      be sent to the backend.
@@ -168,8 +179,8 @@ from your Netdata):
      of times within each pattern). The patterns are checked against the hostname (the localhost is always checked as
      `localhost`), allowing us to filter which hosts will be sent to the backend when this Netdata is a central Netdata
      aggregating multiple hosts. A pattern starting with `!` gives a negative match. So to match all hosts named `*db*`
-     except hosts containing `*slave*`, use `!*slave* *db*` (so, the order is important: the first pattern matching the
-     hostname will be used - positive or negative).
+     except hosts containing `*child*`, use `!*child* *db*` (so, the order is important: the first pattern
+     matching the hostname will be used - positive or negative).
 
 -   `send charts matching = *` includes one or more space separated patterns, using `*` as wildcard (any number of times
      within each pattern). The patterns are checked against both chart id and chart name. A pattern starting with `!`
@@ -183,9 +194,14 @@ from your Netdata):
      are different: disks with device-mapper, interrupts, QoS classes, statsd synthetic charts, etc.
 
 -   `host tags = list of TAG=VALUE` defines tags that should be appended on all metrics for the given host. These are
-     currently only sent to opentsdb and prometheus. Please use the appropriate format for each time-series db. For
-     example opentsdb likes them like `TAG1=VALUE1 TAG2=VALUE2`, but prometheus like `tag1="value1",tag2="value2"`. Host
-     tags are mirrored with database replication (streaming of metrics between Netdata servers).
+     currently only sent to graphite, json, opentsdb and prometheus. Please use the appropriate format for each
+     time-series db. For example opentsdb likes them like `TAG1=VALUE1 TAG2=VALUE2`, but prometheus like `tag1="value1",
+     tag2="value2"`. Host tags are mirrored with database replication (streaming of metrics between Netdata servers).
+
+     Starting from Netdata v1.20 the host tags are parsed in accordance with a configured backend type and stored as
+     host labels so that they can be reused in API responses and exporting connectors. The parsing is supported for
+     graphite, json, opentsdb, and prometheus (default) backend types. You can check how the host tags were parsed using
+     the /api/v1/info API call.
 
 ## monitoring operation
 
@@ -209,8 +225,6 @@ Netdata provides 5 charts:
 ![image](https://cloud.githubusercontent.com/assets/2662304/20463536/eb196084-af3d-11e6-8ee5-ddbd3b4d8449.png)
 
 ## alarms
-
-The latest version of the alarms configuration for monitoring the backend is [here](../health/health.d/backend.conf)
 
 Netdata adds 4 alarms:
 

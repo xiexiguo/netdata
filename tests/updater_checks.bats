@@ -35,10 +35,7 @@ setup() {
 }
 
 @test "install stable netdata using kickstart" {
-	kickstart_file="/tmp/kickstart.$$"
-	curl -Ss -o ${kickstart_file} https://my-netdata.io/kickstart.sh
-	chmod +x ${kickstart_file}
-	${kickstart_file} --dont-wait --dont-start-it --auto-update --install ${INSTALLATION}
+	./packaging/installer/kickstart.sh --dont-wait --dont-start-it --auto-update --install ${INSTALLATION}
 
 	# Validate particular files
 	for file in $FILES; do
@@ -57,9 +54,8 @@ setup() {
 @test "update netdata using the new updater" {
 	export ENVIRONMENT_FILE="${ENV}"
 	# Run the updater, with the override so that it uses the local repo we have at hand
-	# Try to run the installed, if any, otherwise just run the one from the repo
 	export NETDATA_LOCAL_TARBAL_OVERRIDE="${PWD}"
-	/etc/cron.daily/netdata-updater || ./packaging/installer/netdata-updater.sh
+	${INSTALLATION}/netdata/usr/libexec/netdata/netdata-updater.sh --not-running-from-cron
 	! grep "new_installation" "${ENV}"
 }
 

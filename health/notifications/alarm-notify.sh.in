@@ -35,6 +35,7 @@
 #  - Microsoft Team notification by @tioumen
 #  - RocketChat notifications by @Hermsi1337 #3777
 #  - Google Hangouts Chat notifications by @EnzoAkira and @hendrikhofstadt
+#  - Dynatrace Event by @illumine
 
 # -----------------------------------------------------------------------------
 # testing notifications
@@ -170,6 +171,8 @@ awssns
 rocketchat
 sms
 hangouts
+dynatrace
+matrix
 "
 
 # -----------------------------------------------------------------------------
@@ -193,7 +196,7 @@ fi
 [ -z "${NETDATA_STOCK_CONFIG_DIR}" ] && NETDATA_STOCK_CONFIG_DIR="@libconfigdir_POST@"
 [ -z "${NETDATA_CACHE_DIR}" ] && NETDATA_CACHE_DIR="@cachedir_POST@"
 [ -z "${NETDATA_REGISTRY_URL}" ] && NETDATA_REGISTRY_URL="https://registry.my-netdata.io"
-[ -z "${NETDATA_REGISTRY_CLOUD_BASE_URL}" ] && NETDATA_REGISTRY_CLOUD_BASE_URL="https://netdata.cloud"
+[ -z "${NETDATA_REGISTRY_CLOUD_BASE_URL}" ] && NETDATA_REGISTRY_CLOUD_BASE_URL="https://app.netdata.cloud"
 
 # -----------------------------------------------------------------------------
 # parse command line parameters
@@ -349,6 +352,10 @@ FLEEP_SENDER="${host}"
 # Amazon SNS configs
 AWSSNS_MESSAGE_FORMAT=
 
+# Matrix configs
+MATRIX_HOMESERVER=
+MATRIX_ACCESSTOKEN=
+
 # syslog configs
 SYSLOG_FACILITY=
 
@@ -365,6 +372,16 @@ IRC_NETWORK=
 
 # hangouts configs
 declare -A HANGOUTS_WEBHOOK_URI
+
+# dynatrace configs
+DYNATRACE_SPACE=
+DYNATRACE_SERVER=
+DYNATRACE_TOKEN=
+DYNATRACE_TAG_VALUE=
+DYNATRACE_ANNOTATION_TYPE=
+DYNATRACE_EVENT=
+SEND_DYNATRACE=
+
 
 # load the stock and user configuration files
 # these will overwrite the variables above
@@ -393,7 +410,7 @@ if [ -z ${EMAIL_CHARSET} ]; then
 fi
 
 # If we've been asked to use FQDN's for the URL's in the alarm, do so,
-# unless we're sending an alarm for a slave system which we can't get the
+# unless we're sending an alarm for a child system which we can't get the
 # FQDN of easily.
 if [ "${use_fqdn}" = "YES" ] && [ "${host}" = "$(hostname -s 2>/dev/null)" ]; then
 	host="$(hostname -f 2>/dev/null)"
@@ -435,7 +452,6 @@ filter_recipient_by_criticality() {
 		if [ -f "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}/${alarm_id}" ]; then
 			# we do not remove the file, so that he will get future notifications of this alarm
 			debug "SEVERITY FILTERING for ${x} VIA ${method}: ALLOW: recipient has been notified for this alarm in the past (will still receive next status change)"
-			return 0
 		fi
 		;;
 
@@ -444,7 +460,6 @@ filter_recipient_by_criticality() {
 			# remove the file, so that he will only receive notifications for CRITICAL states for this alarm
 			rm "${NETDATA_CACHE_DIR}/alarm-notify/${method}/${r}/${alarm_id}"
 			debug "SEVERITY FILTERING for ${x} VIA ${method}: ALLOW: recipient has been notified for this alarm (will only receive CRITICAL notifications from now on)"
-			return 0
 		fi
 		;;
 	esac
@@ -505,6 +520,16 @@ filter_recipient_by_criticality() {
 #shellcheck disable=SC2153
 { [ -z "${FLEEP_SERVER}" ] || [ -z "${FLEEP_SENDER}" ]; } && SEND_FLEEP="NO"
 
+# check dynatrace
+{ [ -z "${DYNATRACE_SPACE}" ] ||
+  [ -z "${DYNATRACE_SERVER}" ] ||
+  [ -z "${DYNATRACE_TOKEN}" ] ||
+  [ -z "${DYNATRACE_TAG_VALUE}" ] ||
+  [ -z "${DYNATRACE_EVENT}" ]; } && SEND_DYNATRACE="NO"
+
+# check matrix
+{ [ -z "${MATRIX_HOMESERVER}" ] || [ -z "${MATRIX_ACCESSTOKEN}" ]; } && SEND_MATRIX="NO"
+
 if [ "${SEND_PUSHOVER}" = "YES" ] ||
 	[ "${SEND_SLACK}" = "YES" ] ||
 	[ "${SEND_ROCKETCHAT}" = "YES" ] ||
@@ -522,8 +547,10 @@ if [ "${SEND_PUSHOVER}" = "YES" ] ||
 	[ "${SEND_FLEEP}" = "YES" ] ||
 	[ "${SEND_PROWL}" = "YES" ] ||
 	[ "${SEND_HANGOUTS}" = "YES" ] ||
+	[ "${SEND_MATRIX}" = "YES" ] ||
 	[ "${SEND_CUSTOM}" = "YES" ] ||
-	[ "${SEND_MSTEAM}" = "YES" ]; then
+	[ "${SEND_MSTEAM}" = "YES" ] ||
+	[ "${SEND_DYNATRACE}" = "YES" ]; then
 	# if we need curl, check for the curl command
 	if [ -z "${curl}" ]; then
 		curl="$(command -v curl 2>/dev/null)"
@@ -548,7 +575,9 @@ if [ "${SEND_PUSHOVER}" = "YES" ] ||
 		SEND_FLEEP="NO"
 		SEND_PROWL="NO"
 		SEND_HANGOUTS="NO"
+		SEND_MATRIX="NO"
 		SEND_CUSTOM="NO"
+		SEND_DYNATRACE="NO"
 	fi
 fi
 
@@ -669,13 +698,16 @@ for method in "${SEND_EMAIL}" \
 	"${SEND_PD}" \
 	"${SEND_FLEEP}" \
 	"${SEND_PROWL}" \
+	"${SEND_MATRIX}" \
 	"${SEND_CUSTOM}" \
 	"${SEND_IRC}" \
 	"${SEND_HANGOUTS}" \
 	"${SEND_AWSSNS}" \
 	"${SEND_SYSLOG}" \
 	"${SEND_SMS}" \
-	"${SEND_MSTEAM}"; do
+	"${SEND_MSTEAM}" \
+    "${SEND_DYNATRACE}"; do
+	
 	if [ "${method}" == "YES" ]; then
 		proceed=1
 		break
@@ -1682,6 +1714,51 @@ send_awssns() {
 }
 
 # -----------------------------------------------------------------------------
+# Matrix sender
+
+send_matrix() {
+	local homeserver="${1}" webhook accesstoken rooms="${2}" httpcode sent=0 payload
+
+	[ "${SEND_MATRIX}" != "YES" ] && return 1
+	[ -z "${MATRIX_ACCESSTOKEN}" ] && return 1
+
+	accesstoken="${MATRIX_ACCESSTOKEN}"
+
+	case "${status}" in
+	WARNING) emoji="⚠️" ;;
+	CRITICAL) emoji="🔴" ;;
+	CLEAR) emoji="✅" ;;
+	*) emoji="⚪️" ;;
+	esac
+
+	for room in ${rooms}; do
+		webhook="$homeserver/_matrix/client/r0/rooms/$(urlencode $room)/send/m.room.message?access_token=$accesstoken"
+		payload="$(
+	cat <<EOF
+	{
+		"msgtype": "m.notice",
+		"format": "org.matrix.custom.html",
+			"formatted_body": "${emoji} ${host} ${status_message} - <b>${name//_/ }</b><br>${chart} (${family})<br><a href=\"${goto_url}\">${alarm}</a><br><i>${info}</i>",
+			"body": "${emoji} ${host} ${status_message} - ${name//_/ } ${chart} (${family}) ${goto_url} ${alarm} ${info}"
+	}
+EOF
+		)"
+
+		httpcode=$(docurl -X POST --data "${payload}" "${webhook}")
+		if [ "${httpcode}" == "200" ]; then
+			info "sent Matrix notification for: ${host} ${chart}.${name} is ${status} to '${room}'"
+			sent=$((sent + 1))
+		else
+			error "failed to send Matrix notification for: ${host} ${chart}.${name} is ${status} to '${room}', with HTTP error code ${httpcode}."
+		fi
+	done
+
+	[ ${sent} -gt 0 ] && return 0
+
+	return 1
+}
+
+# -----------------------------------------------------------------------------
 # syslog sender
 
 send_syslog() {
@@ -1888,6 +1965,53 @@ EOF
 	[ ${sent} -gt 0 ] && return 0
 
 	return 1
+}
+# -----------------------------------------------------------------------------
+# Dynatrace sender
+send_dynatrace() {
+  [ "${SEND_DYNATRACE}" != "YES" ] && return 1
+
+  local dynatrace_url="${DYNATRACE_SERVER}/e/${DYNATRACE_SPACE}/api/v1/events"
+  local description="NetData Notification for: ${host} ${chart}.${name} is ${status}"
+  local payload=""
+  
+  payload=$(cat <<EOF
+{
+  "title": "NetData Alarm from ${host}",
+  "source" : "${DYNATRACE_ANNOTATION_TYPE}",
+  "description" : "${description}",
+  "eventType": "${DYNATRACE_EVENT}",
+   "attachRules":{
+     "tagRule":[{
+        "meTypes":["HOST"],
+        "tags":["${DYNATRACE_TAG_VALUE}"]
+     }]
+  },
+  "customProperties":{
+    "description": "${description}"
+  }
+}
+EOF
+)
+
+  # echo ${payload}
+
+  httpcode=$(docurl -X POST  -H "Authorization: Api-token ${DYNATRACE_TOKEN}"  -H "Content-Type: application/json" -d "${payload}"    ${dynatrace_url})
+  ret=$?
+
+
+  if [ ${ret} -eq 0 ]; then
+     if [ "${httpcode}" = "200" ]; then
+        info "sent ${DYNATRACE_EVENT} to ${DYNATRACE_SERVER}"
+        return 0
+     else
+        warning "Dynatrace ${DYNATRACE_SERVER} responded ${httpcode} notification for: ${host} ${chart}.${name} is ${status} was not sent!"
+        return 1
+     fi
+  else
+     error  "failed to sent ${DYNATRACE_EVENT} notification for: ${host} ${chart}.${name} is ${status} to  ${DYNATRACE_SERVER} with error code ${ret}."
+     return 1
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2214,6 +2338,13 @@ send_awssns "${to_awssns}"
 SENT_AWSSNS=$?
 
 # -----------------------------------------------------------------------------
+#  send the Matrix message
+send_matrix "${MATRIX_HOMESERVER}" "${to_matrix}"
+
+SENT_MATRIX=$?
+
+
+# -----------------------------------------------------------------------------
 # send the syslog message
 
 send_syslog "${to_syslog}"
@@ -2394,6 +2525,12 @@ fi
 SENT_EMAIL=$?
 
 # -----------------------------------------------------------------------------
+# send the EVENT to Dynatrace
+send_dynatrace "${host}" "${chart}" "${name}"  "${status}"
+SENT_DYNATRACE=$?
+
+
+# -----------------------------------------------------------------------------
 # let netdata know
 for state in "${SENT_EMAIL}" \
 	"${SENT_PUSHOVER}" \
@@ -2416,9 +2553,11 @@ for state in "${SENT_EMAIL}" \
 	"${SENT_CUSTOM}" \
 	"${SENT_IRC}" \
 	"${SENT_AWSSNS}" \
+	"${SENT_MATRIX}" \
 	"${SENT_SYSLOG}" \
 	"${SENT_SMS}" \
-	"${SENT_MSTEAM}"; do
+	"${SENT_MSTEAM}" \
+    "${SENT_DYNATRACE}"; do	
 	if [ "${state}" -eq 0 ]; then
 		# we sent something
 		exit 0

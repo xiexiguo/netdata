@@ -1,3 +1,10 @@
+<!--
+---
+title: "Web server"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/web/server/README.md
+---
+-->
+
 # Web server
 
 The Netdata web server runs as `static-threaded`, i.e. with a fixed, configurable number of threads.
@@ -41,7 +48,7 @@ Using the above, Netdata will bind to:
 -   IPv4 127.0.0.1 at port 19999 (port was used from `default port`). Only the UI (dashboard) and the read API will be accessible on this port. Both HTTP and HTTPS requests will be accepted.
 -   IPv4 10.1.1.1 at port 19998. The management API and `netdata.conf` will be accessible on this port.
 -   All the IPs `hostname` resolves to (both IPv4 and IPv6 depending on the resolved IPs) at port 19997. Only badges will be accessible on this port.
--   All IPv6 IPs at port 19996. Only metric streaming requests from other Netdata agents will be accepted on this port. Only encrypted streams will be allowed (i.e. slaves also need to be [configured for TLS](../../streaming).
+-   All IPv6 IPs at port 19996. Only metric streaming requests from other Netdata agents will be accepted on this port. Only encrypted streams will be allowed (i.e. child nodes also need to be [configured for TLS](/streaming/README.md).
 -   All the IPs `localhost` resolves to (both IPv4 and IPv6 depending the resolved IPs) at port 19996. This port will only accept registry API requests.
 -   All IPv4 and IPv6 IPs at port `http` as set in `/etc/services`. Only the UI (dashboard) and the read API will be accessible on this port. 
 -   Unix domain socket `/run/netdata/netdata.sock`. All requests are serviceable on this socket. Note that in some OSs like Fedora, every service sees a different `/tmp`, so don't create a Unix socket under `/tmp`. `/run` or `/var/run` is suggested.
@@ -60,11 +67,15 @@ The API requests are serviced as follows:
 
 ### Enabling TLS support
 
-Since v1.16.0, Netdata supports encrypted HTTP connections to the web server, plus encryption of streaming data between a slave and its master, via the TLS 1.2 protocol.
+Since v1.16.0, Netdata supports encrypted HTTP connections to the web server, plus encryption of streaming data to a
+parent from its child nodes, via the TLS protocol.
 
-Inbound unix socket connections are unaffected, regardless of the TLS settings.\
-??? info "Differences in TLS and SSL terminology"
-    While Netdata uses Transport Layer Security (TLS) 1.2 to encrypt communications rather than the obsolete SSL protocol, it's still common practice to refer to encrypted web connections as `SSL`. Many vendors, like Nginx and even Netdata itself, use `SSL` in configuration files, whereas documentation will always refer to encrypted communications as `TLS` or `TLS/SSL`.
+Inbound unix socket connections are unaffected, regardless of the TLS settings.
+
+> While Netdata uses Transport Layer Security (TLS) 1.2 to encrypt communications rather than the obsolete SSL protocol,
+> it's still common practice to refer to encrypted web connections as `SSL`. Many vendors, like Nginx and even Netdata
+> itself, use `SSL` in configuration files, whereas documentation will always refer to encrypted communications as `TLS`
+> or `TLS/SSL`.
 
 To enable TLS, provide the path to your certificate and private key in the `[web]` section of `netdata.conf`:
 
@@ -74,7 +85,7 @@ To enable TLS, provide the path to your certificate and private key in the `[web
 	ssl certificate = /etc/netdata/ssl/cert.pem
 ```
 
-Both files must be readable by the `netdata` user. If either of these files do not exist or are unreadable, Netdata will fall back to HTTP. For a master/slave connection, only the master needs these settings.
+Both files must be readable by the `netdata` user. If either of these files do not exist or are unreadable, Netdata will fall back to HTTP. For a parent-child connection, only the parent needs these settings.
 
 For test purposes, you can generate self-signed certificates with the following command:
 
@@ -82,19 +93,34 @@ For test purposes, you can generate self-signed certificates with the following 
 openssl req -newkey rsa:2048 -nodes -sha512 -x509 -days 365 -keyout key.pem -out cert.pem
 ```
 
-!!! note
-    If you use 4096 bits for your key and the certificate, Netdata will need more CPU to process the communication. `rsa4096` can be up to 4 times slower than `rsa2048`, so we recommend using 2048 bits. You can verify the difference by running:
+> If you use 4096 bits for your key and the certificate, Netdata will need more CPU to process the communication.
+> `rsa4096` can be up to 4 times slower than `rsa2048`, so we recommend using 2048 bits. You can verify the difference
+> by running:
+>
+> ```sh
+> openssl speed rsa2048 rsa4096
+> ```
 
-```sh
-openssl speed rsa2048 rsa4096
+### Select TLS version
+
+Beginning with version 1.21, you can also specify the TLS version and the ciphers that you want to use:
+
+```conf
+[web]
+    tls version = 1.3
+    tls ciphers = TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
 ```
+
+If you do not specify these options, Netdata will use the highest available protocol version on your system and the default cipher list for that protocol provided by your TLS implementation.
+
+While Netdata accepts all the TLS version as arguments (`1` or `1.0`, `1.1`, `1.2` and `1.3`), we recommend you use `1.3` for the most secure encryption.
 
 #### TLS/SSL enforcement
 
 When the certificates are defined and unless any other options are provided, a Netdata server will:
 
 -   Redirect all incoming HTTP web server requests to HTTPS. Applies to the dashboard, the API, `netdata.conf` and badges.
--   Allow incoming slave connections to use both unencrypted and encrypted communications for streaming.
+-   Allow incoming child connections to use both unencrypted and encrypted communications for streaming.
 
 To change this behavior, you need to modify the `bind to` setting in the `[web]` section of `netdata.conf`. At the end of each port definition, you can append `^SSL=force` or `^SSL=optional`. What happens with these settings differs, depending on whether the port is used for HTTP/S requests, or for streaming.
 
@@ -111,7 +137,7 @@ Example:
     bind to = *=dashboard|registry|badges|management|streaming|netdata.conf^SSL=force
 ```
 
-For information how to configure the slaves to use TLS, check [securing the communication](../../streaming#securing-streaming-communications) in the streaming documentation. There you will find additional details on the expected behavior for client and server nodes, when their respective TLS options are enabled.
+For information how to configure the child to use TLS, check [securing the communication](/streaming/README.md#securing-streaming-communications) in the streaming documentation. There you will find additional details on the expected behavior for client and server nodes, when their respective TLS options are enabled.
 
 When we define the use of SSL in a Netdata agent for different ports,  Netdata will apply the behavior specified on each port. For example, using the configuration line below:
 
@@ -123,7 +149,7 @@ When we define the use of SSL in a Netdata agent for different ports,  Netdata w
 Netdata will:
 
 -   Force all HTTP requests to the default port to be redirected to HTTPS (same port).
--   Refuse unencrypted streaming connections from slaves on the default port.
+-   Refuse unencrypted streaming connections from child nodes on the default port.
 -   Allow both HTTP and HTTPS requests to port 20000 for `netdata.conf`
 -   Force HTTP requests to port 20001 to be redirected to HTTPS (same port). Only allow requests for the dashboard, the read API and the registry on port 20001.
 
@@ -160,14 +186,14 @@ Netdata supports access lists in `netdata.conf`:
 
 -   `allow badges from` checks if the API request is for a badge. Badges are not matched by `allow dashboard from`.
 
--   `allow streaming from` checks if the slave willing to stream metrics to this Netdata is allowed.
-     This can be controlled per API KEY and MACHINE GUID in [stream.conf](../../streaming/stream.conf).
-     The setting in `netdata.conf` is checked before the ones in [stream.conf](../../streaming/stream.conf).
+-   `allow streaming from` checks if the child willing to stream metrics to this Netdata is allowed.
+     This can be controlled per API KEY and MACHINE GUID in `stream.conf`.
+     The setting in `netdata.conf` is checked before the ones in `stream.conf`.
 
 -   `allow netdata.conf from` checks the IP to allow `http://netdata.host:19999/netdata.conf`.
      The IPs listed are all the private IPv4 addresses, including link local IPv6 addresses. Keep in mind that connections to Netdata API ports are filtered by `allow connections from`. So, IPs allowed by `allow netdata.conf from` should also be allowed by `allow connections from`.
 
--   `allow management from` checks the IPs to allow API management calls. Management via the API is currently supported for [health](../api/health/#health-management-api)
+-   `allow management from` checks the IPs to allow API management calls. Management via the API is currently supported for [health](/web/api/health/README.md#health-management-api)
 
 In order to check the FQDN of the connection without opening the Netdata agent to DNS-spoofing, a reverse-dns record
 must be setup for the connecting host. At connection time the reverse-dns of the peer IP address is resolved, and
@@ -193,14 +219,14 @@ present that may match DNS FQDNs.
 
 |setting|default|info|
 |:-----:|:-----:|:---|
-|ses max window|`15`|See [single exponential smoothing](../api/queries/des/)|
-|des max window|`15`|See [double exponential smoothing](../api/queries/des/)|
+|ses max window|`15`|See [single exponential smoothing](/web/api/queries/des/README.md)|
+|des max window|`15`|See [double exponential smoothing](/web/api/queries/des/README.md)|
 |listen backlog|`4096`|The port backlog. Check `man 2 listen`.|
 |web files owner|`netdata`|The user that owns the web static files. Netdata will refuse to serve a file that is not owned by this user, even if it has read access to that file. If the user given is not found, Netdata will only serve files owned by user given in `run as user`.|
 |web files group|`netdata`|If this is set, Netdata will check if the file is owned by this group and refuse to serve the file if it's not.|
 |disconnect idle clients after seconds|`60`|The time in seconds to disconnect web clients after being totally idle.|
 |timeout for first request|`60`|How long to wait for a client to send a request before closing the socket. Prevents slow request attacks.|
-|accept a streaming request every seconds|`0`|Can be used to set a limit on how often a master Netdata server will accept streaming requests from the slaves in a [streaming and replication setup](../../streaming)|
+|accept a streaming request every seconds|`0`|Can be used to set a limit on how often a parent node will accept streaming requests from child nodes in a [streaming and replication setup](/streaming/README.md)|
 |respect do not track policy|`no`|If set to `yes`, will respect the client's browser preferences on storing cookies.|
 |x-frame-options response header||[Avoid clickjacking attacks, by ensuring that the content is not embedded into other sites](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options).|
 |enable gzip compression|`yes`|When set to `yes`, Netdata web responses will be GZIP compressed, if the web client accepts such responses.|

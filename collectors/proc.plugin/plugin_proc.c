@@ -21,6 +21,9 @@ static struct proc_module {
         { .name = "/proc/loadavg", .dim = "loadavg", .func = do_proc_loadavg },
         { .name = "/proc/sys/kernel/random/entropy_avail", .dim = "entropy", .func = do_proc_sys_kernel_random_entropy_avail },
 
+        // pressure metrics
+        { .name = "/proc/pressure", .dim = "pressure", .func = do_proc_pressure },
+
         // CPU metrics
         { .name = "/proc/interrupts", .dim = "interrupts", .func = do_proc_interrupts },
         { .name = "/proc/softirqs", .dim = "softirqs", .func = do_proc_softirqs },
@@ -145,7 +148,7 @@ void *proc_main(void *ptr) {
             static RRDSET *st = NULL;
 
             if(unlikely(!st)) {
-                st = rrdset_find_bytype_localhost("netdata", "plugin_proc_modules");
+                st = rrdset_find_active_bytype_localhost("netdata", "plugin_proc_modules");
 
                 if(!st) {
                     st = rrdset_create_localhost(

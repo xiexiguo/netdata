@@ -1,80 +1,54 @@
-# varnish
+<!--
+title: "Varnish Cache monitoring with Netdata"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/python.d.plugin/varnish/README.md
+sidebar_label: "Varnish Cache"
+-->
 
-Module uses the `varnishstat` command to provide varnish cache statistics.
+# Varnish Cache monitoring with Netdata
 
-It produces:
+Provides HTTP accelerator global, backends (VBE) and disks (SMF) statistics using `varnishstat` tool.
 
-1.  **Connections Statistics** in connections/s
 
-    -   accepted
-    -   dropped
+## Requirements
 
-2.  **Client Requests** in requests/s
+-   `netdata` user must be a member of the `varnish` group 
 
-    -   received
+## Charts
 
-3.  **All History Hit Rate Ratio** in percent
+This module produces the following charts:
 
-    -   hit
-    -   miss
-    -   hitpass
+-   Connections Statistics in `connections/s`
+-   Client Requests in `requests/s`
+-   All History Hit Rate Ratio in `percent`
+-   Current Poll Hit Rate Ratio in `percent`
+-   Expired Objects in `expired/s`
+-   Least Recently Used Nuked Objects in `nuked/s`
+-   Number Of Threads In All Pools in `pools`
+-   Threads Statistics in `threads/s`
+-   Current Queue Length in `requests`
+-   Backend Connections Statistics in `connections/s`
+-   Requests To The Backend in `requests/s`
+-   ESI Statistics in `problems/s`
+-   Memory Usage in `MiB`
+-   Uptime in `seconds`
 
-4.  **Current Poll Hit Rate Ratio** in percent
+For every backend (VBE):
 
-    -   hit
-    -   miss
-    -   hitpass
+-   Backend Response Statistics in `kilobits/s`
 
-5.  **Expired Objects** in expired/s
+For every disk (SMF):
 
-    -   objects
+-   Disk Usage in `KiB` 
 
-6.  **Least Recently Used Nuked Objects** in nuked/s
+## Configuration
 
-    -   objects
+Edit the `python.d/varnish.conf` configuration file using `edit-config` from the your agent's [config
+directory](/docs/step-by-step/step-04.md#find-your-netdataconf-file), which is typically at `/etc/netdata`.
 
-7.  **Number Of Threads In All Pools** in threads
-
-    -   threads
-
-8.  **Threads Statistics** in threads/s
-
-    -   created
-    -   failed
-    -   limited
-
-9.  **Current Queue Length** in requests
-
-    -   in queue
-
-10. **Backend Connections Statistics** in connections/s
-
-    -   successful
-    -   unhealthy
-    -   reused
-    -   closed
-    -   resycled
-    -   failed
-
-11. **Requests To The Backend** in requests/s
-
-    -   received
-
-12. **ESI Statistics** in problems/s
-
-    -   errors
-    -   warnings
-
-13. **Memory Usage** in MB
-
-    -   free
-    -   allocated
-
-14. **Uptime** in seconds
-
-    -   uptime
-
-## configuration
+```bash
+cd /etc/netdata   # Replace this path with your Netdata config directory, if different
+sudo ./edit-config python.d/varnish.conf
+```
 
 Only one parameter is supported:
 
@@ -82,7 +56,7 @@ Only one parameter is supported:
 instance_name: 'name'
 ```
 
-The name of the varnishd instance to get logs from. If not specified, the host name is used.
+The name of the `varnishd` instance to get logs from. If not specified, the host name is used.
 
 ---
 

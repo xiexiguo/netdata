@@ -139,6 +139,11 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->disk_space_mb       = default_rrdeng_disk_quota_mb;
 #endif
     host->health_enabled      = (memory_mode == RRD_MEMORY_MODE_NONE)? 0 : health_enabled;
+
+    host->sender = mallocz(sizeof(*host->sender));
+    sender_init(host->sender, host);
+    netdata_mutex_init(&host->receiver_lock);
+
     host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
     host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
     host->rrdpush_send_api_key     = (host->rrdpush_send_enabled)?strdupz(rrdpush_api_key):NULL;
@@ -147,6 +152,8 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->rrdpush_sender_pipe[0] = -1;
     host->rrdpush_sender_pipe[1] = -1;
     host->rrdpush_sender_socket  = -1;
+
+    //host->stream_version = STREAMING_PROTOCOL_CURRENT_VERSION;        Unused?
 #ifdef ENABLE_HTTPS
     host->ssl.conn = NULL;
     host->ssl.flags = NETDATA_SSL_START;
@@ -154,8 +161,8 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->stream_ssl.flags = NETDATA_SSL_START;
 #endif
 
-    netdata_mutex_init(&host->rrdpush_sender_buffer_mutex);
     netdata_rwlock_init(&host->rrdhost_rwlock);
+    netdata_rwlock_init(&host->labels_rwlock);
 
     rrdhost_init_hostname(host, hostname);
     rrdhost_init_machine_guid(host, guid);
@@ -192,8 +199,8 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->health_log.next_log_id = 1;
     host->health_log.next_alarm_id = 1;
     host->health_log.max = 1000;
-    host->health_log.next_log_id =
-    host->health_log.next_alarm_id = (uint32_t)now_realtime_sec();
+    host->health_log.next_log_id = (uint32_t)now_realtime_sec();
+    host->health_log.next_alarm_id = 0;
 
     long n = config_get_number(CONFIG_SECTION_HEALTH, "in memory max health log entries", host->health_log.max);
     if(n < 10) {
@@ -236,30 +243,6 @@ RRDHOST *rrdhost_create(const char *hostname,
        }
 
     }
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
-#ifdef ENABLE_DBENGINE
-        char dbenginepath[FILENAME_MAX + 1];
-        int ret;
-
-        snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", host->cache_dir);
-        ret = mkdir(dbenginepath, 0775);
-        if(ret != 0 && errno != EEXIST)
-            error("Host '%s': cannot create directory '%s'", host->hostname, dbenginepath);
-        else
-            ret = rrdeng_init(&host->rrdeng_ctx, dbenginepath, host->page_cache_mb, host->disk_space_mb);
-        if(ret) {
-            error("Host '%s': cannot initialize host with machine guid '%s'. Failed to initialize DB engine at '%s'.",
-                  host->hostname, host->machine_guid, host->cache_dir);
-            rrdhost_free(host);
-            host = NULL;
-            //rrd_hosts_available++; //TODO: maybe we want this?
-
-            return host;
-        }
-#else
-        fatal("RRD_MEMORY_MODE_DBENGINE is not supported in this platform.");
-#endif
-    }
 
     if(host->health_enabled) {
         snprintfz(filename, FILENAME_MAX, "%s/health", host->varlib_dir);
@@ -288,6 +271,35 @@ RRDHOST *rrdhost_create(const char *hostname,
         health_alarm_log_open(host);
     }
 
+    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+#ifdef ENABLE_DBENGINE
+        if (unlikely(-1 == uuid_parse(host->machine_guid, host->host_uuid))) {
+            error("Host machine GUID is not valid.");
+        }
+        host->objects_nr = 1;
+        host->compaction_id = 0;
+        char dbenginepath[FILENAME_MAX + 1];
+        int ret;
+
+        snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", host->cache_dir);
+        ret = mkdir(dbenginepath, 0775);
+        if(ret != 0 && errno != EEXIST)
+            error("Host '%s': cannot create directory '%s'", host->hostname, dbenginepath);
+        else
+            ret = rrdeng_init(host, &host->rrdeng_ctx, dbenginepath, host->page_cache_mb, host->disk_space_mb);
+        if(ret) {
+            error("Host '%s': cannot initialize host with machine guid '%s'. Failed to initialize DB engine at '%s'.",
+                  host->hostname, host->machine_guid, host->cache_dir);
+            rrdhost_free(host);
+            host = NULL;
+            //rrd_hosts_available++; //TODO: maybe we want this?
+
+            return host;
+        }
+#else
+        fatal("RRD_MEMORY_MODE_DBENGINE is not supported in this platform.");
+#endif
+    }
 
     // ------------------------------------------------------------------------
     // link it and add it to the index
@@ -354,7 +366,89 @@ RRDHOST *rrdhost_create(const char *hostname,
 
     rrd_hosts_available++;
 
+#ifdef ENABLE_DBENGINE
+    if (likely(!is_localhost && host && host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE))
+            metalog_commit_update_host(host);
+#endif
     return host;
+}
+
+void rrdhost_update(RRDHOST *host
+                    , const char *hostname
+                    , const char *registry_hostname
+                    , const char *guid
+                    , const char *os
+                    , const char *timezone
+                    , const char *tags
+                    , const char *program_name
+                    , const char *program_version
+                    , int update_every
+                    , long history
+                    , RRD_MEMORY_MODE mode
+                    , unsigned int health_enabled
+                    , unsigned int rrdpush_enabled
+                    , char *rrdpush_destination
+                    , char *rrdpush_api_key
+                    , char *rrdpush_send_charts_matching
+                    , struct rrdhost_system_info *system_info
+)
+{
+    UNUSED(guid);
+    UNUSED(rrdpush_enabled);
+    UNUSED(rrdpush_destination);
+    UNUSED(rrdpush_api_key);
+    UNUSED(rrdpush_send_charts_matching);
+
+    host->health_enabled = health_enabled;
+    //host->stream_version = STREAMING_PROTOCOL_CURRENT_VERSION;        Unused?
+
+    rrdhost_system_info_free(host->system_info);
+    host->system_info = system_info;
+
+    rrdhost_init_os(host, os);
+    rrdhost_init_timezone(host, timezone);
+
+    freez(host->registry_hostname);
+    host->registry_hostname = strdupz((registry_hostname && *registry_hostname)?registry_hostname:hostname);
+
+    if(strcmp(host->hostname, hostname) != 0) {
+        info("Host '%s' has been renamed to '%s'. If this is not intentional it may mean multiple hosts are using the same machine_guid.", host->hostname, hostname);
+        char *t = host->hostname;
+        host->hostname = strdupz(hostname);
+        host->hash_hostname = simple_hash(host->hostname);
+        freez(t);
+    }
+
+    if(strcmp(host->program_name, program_name) != 0) {
+        info("Host '%s' switched program name from '%s' to '%s'", host->hostname, host->program_name, program_name);
+        char *t = host->program_name;
+        host->program_name = strdupz(program_name);
+        freez(t);
+    }
+
+    if(strcmp(host->program_version, program_version) != 0) {
+        info("Host '%s' switched program version from '%s' to '%s'", host->hostname, host->program_version, program_version);
+        char *t = host->program_version;
+        host->program_version = strdupz(program_version);
+        freez(t);
+    }
+
+    if(host->rrd_update_every != update_every)
+        error("Host '%s' has an update frequency of %d seconds, but the wanted one is %d seconds. Restart netdata here to apply the new settings.", host->hostname, host->rrd_update_every, update_every);
+
+    if(host->rrd_history_entries < history)
+        error("Host '%s' has history of %ld entries, but the wanted one is %ld entries. Restart netdata here to apply the new settings.", host->hostname, host->rrd_history_entries, history);
+
+    if(host->rrd_memory_mode != mode)
+        error("Host '%s' has memory mode '%s', but the wanted one is '%s'. Restart netdata here to apply the new settings.", host->hostname, rrd_memory_mode_name(host->rrd_memory_mode), rrd_memory_mode_name(mode));
+
+    // update host tags
+    rrdhost_init_tags(host, tags);
+#ifdef ENABLE_DBENGINE
+    if (likely(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE))
+        metalog_commit_update_host(host);
+#endif
+    return;
 }
 
 RRDHOST *rrdhost_find_or_create(
@@ -403,41 +497,24 @@ RRDHOST *rrdhost_find_or_create(
         );
     }
     else {
-        host->health_enabled = health_enabled;
-
-        if(strcmp(host->hostname, hostname) != 0) {
-            info("Host '%s' has been renamed to '%s'. If this is not intentional it may mean multiple hosts are using the same machine_guid.", host->hostname, hostname);
-            char *t = host->hostname;
-            host->hostname = strdupz(hostname);
-            host->hash_hostname = simple_hash(host->hostname);
-            freez(t);
-        }
-
-        if(strcmp(host->program_name, program_name) != 0) {
-            info("Host '%s' switched program name from '%s' to '%s'", host->hostname, host->program_name, program_name);
-            char *t = host->program_name;
-            host->program_name = strdupz(program_name);
-            freez(t);
-        }
-
-        if(strcmp(host->program_version, program_version) != 0) {
-            info("Host '%s' switched program version from '%s' to '%s'", host->hostname, host->program_version, program_version);
-            char *t = host->program_version;
-            host->program_version = strdupz(program_version);
-            freez(t);
-        }
-
-        if(host->rrd_update_every != update_every)
-            error("Host '%s' has an update frequency of %d seconds, but the wanted one is %d seconds. Restart netdata here to apply the new settings.", host->hostname, host->rrd_update_every, update_every);
-
-        if(host->rrd_history_entries < history)
-            error("Host '%s' has history of %ld entries, but the wanted one is %ld entries. Restart netdata here to apply the new settings.", host->hostname, host->rrd_history_entries, history);
-
-        if(host->rrd_memory_mode != mode)
-            error("Host '%s' has memory mode '%s', but the wanted one is '%s'. Restart netdata here to apply the new settings.", host->hostname, rrd_memory_mode_name(host->rrd_memory_mode), rrd_memory_mode_name(mode));
-
-        // update host tags
-        rrdhost_init_tags(host, tags);
+        rrdhost_update(host
+           , hostname
+           , registry_hostname
+           , guid
+           , os
+           , timezone
+           , tags
+           , program_name
+           , program_version
+           , update_every
+           , history
+           , mode
+           , health_enabled
+           , rrdpush_enabled
+           , rrdpush_destination
+           , rrdpush_api_key
+           , rrdpush_send_charts_matching
+           , system_info);
     }
 
     rrdhost_cleanup_orphan_hosts_nolock(host);
@@ -446,12 +523,11 @@ RRDHOST *rrdhost_find_or_create(
 
     return host;
 }
-
 inline int rrdhost_should_be_removed(RRDHOST *host, RRDHOST *protected, time_t now) {
     if(host != protected
        && host != localhost
        && rrdhost_flag_check(host, RRDHOST_FLAG_ORPHAN)
-       && !host->connected_senders
+       && host->receiver
        && host->senders_disconnected_time
        && host->senders_disconnected_time + rrdhost_free_orphan_time < now)
         return 1;
@@ -483,14 +559,14 @@ restart_after_removal:
 // ----------------------------------------------------------------------------
 // RRDHOST global / startup initialization
 
-void rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
+int rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
     rrdset_free_obsolete_time = config_get_number(CONFIG_SECTION_GLOBAL, "cleanup obsolete charts after seconds", rrdset_free_obsolete_time);
     gap_when_lost_iterations_above = (int)config_get_number(CONFIG_SECTION_GLOBAL, "gap when lost iterations above", gap_when_lost_iterations_above);
     if (gap_when_lost_iterations_above < 1)
         gap_when_lost_iterations_above = 1;
 
     health_init();
-    registry_init();
+
     rrdpush_init();
 
     debug(D_RRDHOST, "Initializing localhost with hostname '%s'", hostname);
@@ -517,6 +593,7 @@ void rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
     );
     rrd_unlock();
 	web_client_api_v1_management_init();
+    return localhost==NULL;
 }
 
 // ----------------------------------------------------------------------------
@@ -562,12 +639,22 @@ void rrdhost_system_info_free(struct rrdhost_system_info *system_info) {
     info("SYSTEM_INFO: free %p", system_info);
 
     if(likely(system_info)) {
-        freez(system_info->os_name);
-        freez(system_info->os_id);
-        freez(system_info->os_id_like);
-        freez(system_info->os_version);
-        freez(system_info->os_version_id);
-        freez(system_info->os_detection);
+        freez(system_info->host_os_name);
+        freez(system_info->host_os_id);
+        freez(system_info->host_os_id_like);
+        freez(system_info->host_os_version);
+        freez(system_info->host_os_version_id);
+        freez(system_info->host_os_detection);
+        freez(system_info->host_cores);
+        freez(system_info->host_cpu_freq);
+        freez(system_info->host_ram_total);
+        freez(system_info->host_disk_space);
+        freez(system_info->container_os_name);
+        freez(system_info->container_os_id);
+        freez(system_info->container_os_id_like);
+        freez(system_info->container_os_version);
+        freez(system_info->container_os_version_id);
+        freez(system_info->container_os_detection);
         freez(system_info->kernel_name);
         freez(system_info->kernel_version);
         freez(system_info->architecture);
@@ -579,6 +666,7 @@ void rrdhost_system_info_free(struct rrdhost_system_info *system_info) {
     }
 }
 
+void destroy_receiver_state(struct receiver_state *rpt);
 void rrdhost_free(RRDHOST *host) {
     if(!host) return;
 
@@ -586,16 +674,44 @@ void rrdhost_free(RRDHOST *host) {
 
     rrd_check_wrlock();     // make sure the RRDs are write locked
 
-    // stop a possibly running thread
-    rrdpush_sender_thread_stop(host);
+    // ------------------------------------------------------------------------
+    // clean up streaming
+    rrdpush_sender_thread_stop(host); // stop a possibly running thread
+    cbuffer_free(host->sender->buffer);
+    buffer_free(host->sender->build);
+    freez(host->sender);
+    host->sender = NULL;
+    if (netdata_exit) {
+        netdata_mutex_lock(&host->receiver_lock);
+        if (host->receiver) {
+            if (!host->receiver->exited)
+                netdata_thread_cancel(host->receiver->thread);
+            netdata_mutex_unlock(&host->receiver_lock);
+            struct receiver_state *rpt = host->receiver;
+            while (host->receiver && !rpt->exited)
+                sleep_usec(50 * USEC_PER_MS);
+            // If the receiver detached from the host then its thread will destroy the state
+            if (host->receiver == rpt)
+                destroy_receiver_state(host->receiver);
+        }
+        else
+            netdata_mutex_unlock(&host->receiver_lock);
+    }
+
+
 
     rrdhost_wrlock(host);   // lock this RRDHOST
 
     // ------------------------------------------------------------------------
     // release its children resources
 
+#ifdef ENABLE_DBENGINE
+    rrdeng_prepare_exit(host->rrdeng_ctx);
+#endif
     while(host->rrdset_root)
         rrdset_free(host->rrdset_root);
+
+    freez(host->exporting_flags);
 
     while(host->alarms)
         rrdcalc_unlink_and_free(host, host->alarms);
@@ -651,10 +767,13 @@ void rrdhost_free(RRDHOST *host) {
         else error("Request to free RRDHOST '%s': cannot find it", host->hostname);
     }
 
+
+
     // ------------------------------------------------------------------------
     // free it
 
     freez((void *)host->tags);
+    free_host_labels(host->labels);
     freez((void *)host->os);
     freez((void *)host->timezone);
     freez(host->program_version);
@@ -671,6 +790,7 @@ void rrdhost_free(RRDHOST *host) {
     freez(host->registry_hostname);
     simple_pattern_free(host->rrdpush_send_charts_matching);
     rrdhost_unlock(host);
+    netdata_rwlock_destroy(&host->labels_rwlock);
     netdata_rwlock_destroy(&host->health_log.alarm_log_rwlock);
     netdata_rwlock_destroy(&host->rrdhost_rwlock);
     freez(host);
@@ -705,6 +825,482 @@ void rrdhost_save_charts(RRDHOST *host) {
     }
 
     rrdhost_unlock(host);
+}
+
+static int is_valid_label_value(char *value) {
+    while(*value) {
+        if(*value == '"' || *value == '\'' || *value == '*' || *value == '!') {
+            return 0;
+        }
+
+        value++;
+    }
+
+    return 1;
+}
+
+static int is_valid_label_key(char *key) {
+    //Prometheus exporter
+    if(!strcmp(key, "chart") || !strcmp(key, "family")  || !strcmp(key, "dimension"))
+        return 0;
+
+    //Netdata and Prometheus  internal
+    if (*key == '_')
+        return 0;
+
+    while(*key) {
+        if(!(isdigit(*key) || isalpha(*key) || *key == '.' || *key == '_' || *key == '-'))
+            return 0;
+
+        key++;
+    }
+
+    return 1;
+}
+
+char *translate_label_source(LABEL_SOURCE l) {
+    switch (l) {
+        case LABEL_SOURCE_AUTO:
+            return "AUTO";
+        case LABEL_SOURCE_NETDATA_CONF:
+            return "NETDATA.CONF";
+        case LABEL_SOURCE_DOCKER :
+            return "DOCKER";
+        case LABEL_SOURCE_ENVIRONMENT  :
+            return "ENVIRONMENT";
+        case LABEL_SOURCE_KUBERNETES :
+            return "KUBERNETES";
+        default:
+            return "Invalid label source";
+    }
+}
+
+struct label *load_auto_labels()
+{
+    struct label *label_list = NULL;
+
+    if (localhost->system_info->host_os_name)
+        label_list =
+            add_label_to_list(label_list, "_os_name", localhost->system_info->host_os_name, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->host_os_version)
+        label_list =
+            add_label_to_list(label_list, "_os_version", localhost->system_info->host_os_version, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->kernel_version)
+        label_list =
+            add_label_to_list(label_list, "_kernel_version", localhost->system_info->kernel_version, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->host_cores)
+        label_list =
+                add_label_to_list(label_list, "_system_cores", localhost->system_info->host_cores, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->host_cpu_freq)
+        label_list =
+                add_label_to_list(label_list, "_system_cpu_freq", localhost->system_info->host_cpu_freq, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->host_ram_total)
+        label_list =
+                add_label_to_list(label_list, "_system_ram_total", localhost->system_info->host_ram_total, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->host_disk_space)
+        label_list =
+                add_label_to_list(label_list, "_system_disk_space", localhost->system_info->host_disk_space, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->architecture)
+        label_list =
+            add_label_to_list(label_list, "_architecture", localhost->system_info->architecture, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->virtualization)
+        label_list =
+            add_label_to_list(label_list, "_virtualization", localhost->system_info->virtualization, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->container)
+        label_list =
+            add_label_to_list(label_list, "_container", localhost->system_info->container, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->container_detection)
+        label_list =
+            add_label_to_list(label_list, "_container_detection", localhost->system_info->container_detection, LABEL_SOURCE_AUTO);
+
+    if (localhost->system_info->virt_detection)
+        label_list =
+            add_label_to_list(label_list, "_virt_detection", localhost->system_info->virt_detection, LABEL_SOURCE_AUTO);
+
+    label_list = add_label_to_list(
+        label_list, "_is_parent", (localhost->next || configured_as_parent()) ? "true" : "false", LABEL_SOURCE_AUTO);
+
+    if (localhost->rrdpush_send_destination)
+        label_list =
+            add_label_to_list(label_list, "_streams_to", localhost->rrdpush_send_destination, LABEL_SOURCE_AUTO);
+
+    return label_list;
+}
+
+static inline int is_valid_label_config_option(char *name, char *value) {
+    return (is_valid_label_key(name) && is_valid_label_value(value) && strcmp(name, "from environment") && strcmp(name, "from kubernetes pods") );
+ }
+
+struct label *load_config_labels()
+{
+    int status = config_load(NULL, 1, CONFIG_SECTION_HOST_LABEL);
+    if(!status) {
+        char *filename = CONFIG_DIR "/" CONFIG_FILENAME;
+        error("LABEL: Cannot reload the configuration file '%s', using labels in memory", filename);
+    }
+
+    struct label *l = NULL;
+    struct section *co = appconfig_get_section(&netdata_config, CONFIG_SECTION_HOST_LABEL);
+    if(co) {
+        config_section_wrlock(co);
+        struct config_option *cv;
+        for(cv = co->values; cv ; cv = cv->next) {
+            if( is_valid_label_config_option(cv->name, cv->value)) {
+                l = add_label_to_list(l, cv->name, cv->value, LABEL_SOURCE_NETDATA_CONF);
+                cv->flags |= CONFIG_VALUE_USED;
+            } else {
+                error("LABELS: It was not possible to create the label '%s' because it contains invalid character(s) or values."
+                       , cv->name);
+            }
+        }
+        config_section_unlock(co);
+    }
+
+    return l;
+}
+
+typedef enum strip_quotes {
+    DO_NOT_STRIP_QUOTES,
+    STRIP_QUOTES
+} STRIP_QUOTES_OPTION;
+
+typedef enum skip_escaped_characters {
+    DO_NOT_SKIP_ESCAPED_CHARACTERS,
+    SKIP_ESCAPED_CHARACTERS
+} SKIP_ESCAPED_CHARACTERS_OPTION;
+
+static inline void strip_last_symbol(
+    char *str,
+    char symbol,
+    SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters)
+{
+    char *end = str;
+
+    while (*end && *end != symbol) {
+        if (unlikely(skip_escaped_characters && *end == '\\')) {
+            end++;
+            if (unlikely(!*end))
+                break;
+        }
+        end++;
+    }
+    if (likely(*end == symbol))
+        *end = '\0';
+}
+
+static inline char *strip_double_quotes(char *str, SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters)
+{
+    if (*str == '"') {
+        str++;
+        strip_last_symbol(str, '"', skip_escaped_characters);
+    }
+
+    return str;
+}
+
+struct label *parse_simple_tags(
+    struct label *label_list,
+    const char *tags,
+    char key_value_separator,
+    char label_separator,
+    STRIP_QUOTES_OPTION strip_quotes_from_key,
+    STRIP_QUOTES_OPTION strip_quotes_from_value,
+    SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters)
+{
+    const char *end = tags;
+
+    while (*end) {
+        const char *start = end;
+        char key[CONFIG_MAX_VALUE + 1];
+        char value[CONFIG_MAX_VALUE + 1];
+
+        while (*end && *end != key_value_separator)
+            end++;
+        strncpyz(key, start, end - start);
+
+        if (*end)
+            start = ++end;
+        while (*end && *end != label_separator)
+            end++;
+        strncpyz(value, start, end - start);
+
+        label_list = add_label_to_list(
+            label_list,
+            strip_quotes_from_key ? strip_double_quotes(trim(key), skip_escaped_characters) : trim(key),
+            strip_quotes_from_value ? strip_double_quotes(trim(value), skip_escaped_characters) : trim(value),
+            LABEL_SOURCE_NETDATA_CONF);
+
+        if (*end)
+            end++;
+    }
+
+    return label_list;
+}
+
+struct label *parse_json_tags(struct label *label_list, const char *tags)
+{
+    char tags_buf[CONFIG_MAX_VALUE + 1];
+    strncpy(tags_buf, tags, CONFIG_MAX_VALUE);
+    char *str = tags_buf;
+
+    switch (*str) {
+    case '{':
+        str++;
+        strip_last_symbol(str, '}', SKIP_ESCAPED_CHARACTERS);
+
+        label_list = parse_simple_tags(label_list, str, ':', ',', STRIP_QUOTES, STRIP_QUOTES, SKIP_ESCAPED_CHARACTERS);
+
+        break;
+    case '[':
+        str++;
+        strip_last_symbol(str, ']', SKIP_ESCAPED_CHARACTERS);
+
+        char *end = str + strlen(str);
+        size_t i = 0;
+
+        while (str < end) {
+            char key[CONFIG_MAX_VALUE + 1];
+            snprintfz(key, CONFIG_MAX_VALUE, "host_tag%zu", i);
+
+            str = strip_double_quotes(trim(str), SKIP_ESCAPED_CHARACTERS);
+
+            label_list = add_label_to_list(label_list, key, str, LABEL_SOURCE_NETDATA_CONF);
+
+            // skip to the next element in the array
+            str += strlen(str) + 1;
+            while (*str && *str != ',')
+                str++;
+            str++;
+            i++;
+        }
+
+        break;
+    case '"':
+        label_list = add_label_to_list(
+            label_list, "host_tag", strip_double_quotes(str, SKIP_ESCAPED_CHARACTERS), LABEL_SOURCE_NETDATA_CONF);
+        break;
+    default:
+        label_list = add_label_to_list(label_list, "host_tag", str, LABEL_SOURCE_NETDATA_CONF);
+        break;
+    }
+
+    return label_list;
+}
+
+struct label *load_labels_from_tags()
+{
+    if (!localhost->tags)
+        return NULL;
+
+    struct label *label_list = NULL;
+    BACKEND_TYPE type = BACKEND_TYPE_UNKNOWN;
+
+    if (config_exists(CONFIG_SECTION_BACKEND, "enabled")) {
+        if (config_get_boolean(CONFIG_SECTION_BACKEND, "enabled", CONFIG_BOOLEAN_NO) != CONFIG_BOOLEAN_NO) {
+            const char *type_name = config_get(CONFIG_SECTION_BACKEND, "type", "graphite");
+            type = backend_select_type(type_name);
+        }
+    }
+
+    switch (type) {
+        case BACKEND_TYPE_GRAPHITE:
+            label_list = parse_simple_tags(
+                label_list, localhost->tags, '=', ';', DO_NOT_STRIP_QUOTES, DO_NOT_STRIP_QUOTES,
+                DO_NOT_SKIP_ESCAPED_CHARACTERS);
+            break;
+        case BACKEND_TYPE_OPENTSDB_USING_TELNET:
+            label_list = parse_simple_tags(
+                label_list, localhost->tags, '=', ' ', DO_NOT_STRIP_QUOTES, DO_NOT_STRIP_QUOTES,
+                DO_NOT_SKIP_ESCAPED_CHARACTERS);
+            break;
+        case BACKEND_TYPE_OPENTSDB_USING_HTTP:
+            label_list = parse_simple_tags(
+                label_list, localhost->tags, ':', ',', STRIP_QUOTES, STRIP_QUOTES,
+                DO_NOT_SKIP_ESCAPED_CHARACTERS);
+            break;
+        case BACKEND_TYPE_JSON:
+            label_list = parse_json_tags(label_list, localhost->tags);
+            break;
+        default:
+            label_list = parse_simple_tags(
+                label_list, localhost->tags, '=', ',', DO_NOT_STRIP_QUOTES, STRIP_QUOTES,
+                DO_NOT_SKIP_ESCAPED_CHARACTERS);
+            break;
+    }
+
+    return label_list;
+}
+
+struct label *load_kubernetes_labels()
+{
+    struct label *l=NULL;
+    char *label_script = mallocz(sizeof(char) * (strlen(netdata_configured_primary_plugins_dir) + strlen("get-kubernetes-labels.sh") + 2));
+    sprintf(label_script, "%s/%s", netdata_configured_primary_plugins_dir, "get-kubernetes-labels.sh");
+    if (unlikely(access(label_script, R_OK) != 0)) {
+        error("Kubernetes pod label fetching script %s not found.",label_script);
+        freez(label_script);
+    } else {
+        pid_t command_pid;
+
+        debug(D_RRDHOST, "Attempting to fetch external labels via %s", label_script);
+
+        FILE *fp = mypopen(label_script, &command_pid);
+        if(fp) {
+            int MAX_LINE_SIZE=300;
+            char buffer[MAX_LINE_SIZE + 1];
+            while (fgets(buffer, MAX_LINE_SIZE, fp) != NULL) {
+                char *name=buffer;
+                char *value=buffer;
+                while (*value && *value != ':') value++;
+                if (*value == ':') {
+                    *value = '\0';
+                    value++;
+                }
+                char *eos=value;
+                while (*eos && *eos != '\n') eos++;
+                if (*eos == '\n') *eos = '\0';
+                if (strlen(value)>0) {
+                    if (is_valid_label_key(name)){
+                        l = add_label_to_list(l, name, value, LABEL_SOURCE_KUBERNETES);
+                    } else {
+                        info("Ignoring invalid label name '%s'", name);
+                    }
+                } else {
+                    error("%s outputted unexpected result: '%s'", label_script, name);
+                }
+            };
+            // Non-zero exit code means that all the script output is error messages. We've shown already any message that didn't include a ':'
+            // Here we'll inform with an ERROR that the script failed, show whatever (if anything) was added to the list of labels, free the memory and set the return to null
+            int retcode=mypclose(fp, command_pid);
+            if (retcode) {
+                error("%s exited abnormally. No kubernetes labels will be added to the host.", label_script);
+                struct label *ll=l;
+                while (ll != NULL) {
+                    info("Ignoring Label [source id=%s]: \"%s\" -> \"%s\"\n", translate_label_source(ll->label_source), ll->key, ll->value);
+                    ll = ll->next;
+                    freez(l);
+                    l=ll;
+                }
+            }
+        }
+        freez(label_script);
+    }
+
+    return l;
+}
+
+struct label *create_label(char *key, char *value, LABEL_SOURCE label_source)
+{
+    size_t key_len = strlen(key), value_len = strlen(value);
+    size_t n = sizeof(struct label) + key_len + 1 + value_len + 1;
+    struct label *result = callocz(1,n);
+    if (result != NULL) {
+        char *c = (char *)result;
+        c += sizeof(struct label);
+        strcpy(c, key);
+        result->key = c;
+        c += key_len + 1;
+        strcpy(c, value);
+        result->value = c;
+        result->label_source = label_source;
+        result->key_hash = simple_hash(result->key);
+    }
+    return result;
+}
+
+void free_host_labels(struct label *labels)
+{
+    while (labels != NULL)
+    {
+        struct label *current = labels;
+        labels = labels->next;
+        freez(current);
+    }
+}
+
+void replace_label_list(RRDHOST *host, struct label *new_labels)
+{
+    rrdhost_check_rdlock(host);
+    netdata_rwlock_wrlock(&host->labels_rwlock);
+    struct label *old_labels = host->labels;
+    host->labels = new_labels;
+    netdata_rwlock_unlock(&host->labels_rwlock);
+
+    free_host_labels(old_labels);
+}
+
+struct label *add_label_to_list(struct label *l, char *key, char *value, LABEL_SOURCE label_source)
+{
+    struct label *lab = create_label(key, value, label_source);
+    lab->next = l;
+    return lab;
+}
+
+int label_list_contains(struct label *head, struct label *check)
+{
+    while (head != NULL)
+    {
+        if (head->key_hash == check->key_hash && !strcmp(head->key, check->key))
+            return 1;
+        head = head->next;
+    }
+    return 0;
+}
+
+/* Create a list with entries from both lists.
+   If any entry in the low priority list is masked by an entry in the high priorty list then delete it.
+*/
+struct label *merge_label_lists(struct label *lo_pri, struct label *hi_pri)
+{
+    struct label *result = hi_pri;
+    while (lo_pri != NULL)
+    {
+        struct label *current = lo_pri;
+        lo_pri = lo_pri->next;
+        if (!label_list_contains(result, current)) {
+            current->next = result;
+            result = current;
+        }
+        else
+            freez(current);
+    }
+    return result;
+}
+
+void reload_host_labels()
+{
+    struct label *from_auto = load_auto_labels();
+    struct label *from_k8s = load_kubernetes_labels();
+    struct label *from_config = load_config_labels();
+    struct label *from_tags = load_labels_from_tags();
+
+    struct label *new_labels = merge_label_lists(from_auto, from_k8s);
+    new_labels = merge_label_lists(new_labels, from_tags);
+    new_labels = merge_label_lists(new_labels, from_config);
+
+    rrdhost_rdlock(localhost);
+    replace_label_list(localhost, new_labels);
+
+    health_label_log_save(localhost);
+    rrdhost_unlock(localhost);
+
+/*  TODO-GAPS - fix this so that it looks properly at the state and version of the sender
+    if(localhost->rrdpush_send_enabled && localhost->rrdpush_sender_buffer){
+        localhost->labels_flag |= LABEL_FLAG_UPDATE_STREAM;
+        rrdpush_send_labels(localhost);
+    }
+*/
+    health_reload();
 }
 
 // ----------------------------------------------------------------------------
@@ -789,7 +1385,7 @@ void rrdhost_cleanup_all(void) {
 
     RRDHOST *host;
     rrdhost_foreach_read(host) {
-        if(host != localhost && rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS) && !host->connected_senders)
+        if(host != localhost && rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS) && !host->receiver)
             rrdhost_delete_charts(host);
         else
             rrdhost_cleanup_charts(host);
@@ -816,7 +1412,17 @@ restart_after_removal:
                     && st->last_updated.tv_sec + rrdset_free_obsolete_time < now
                     && st->last_collected_time.tv_sec + rrdset_free_obsolete_time < now
         )) {
-
+#ifdef ENABLE_DBENGINE
+            if(st->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+                rrdset_flag_set(st, RRDSET_FLAG_ARCHIVED);
+                rrdset_flag_clear(st, RRDSET_FLAG_OBSOLETE);
+                if (st->dimensions) {
+                    /* If the chart still has dimensions don't delete it from the metadata log */
+                    continue;
+                }
+                metalog_commit_delete_chart(st);
+            }
+#endif
             rrdset_rdlock(st);
 
             if(rrdhost_delete_obsolete_charts)
@@ -834,37 +1440,79 @@ restart_after_removal:
 
 // ----------------------------------------------------------------------------
 // RRDHOST - set system info from environment variables
-
+// system_info fields must be heap allocated or NULL
 int rrdhost_set_system_info_variable(struct rrdhost_system_info *system_info, char *name, char *value) {
     int res = 0;
 
-    if(!strcmp(name, "NETDATA_SYSTEM_OS_NAME")){
-        freez(system_info->os_name);
-        system_info->os_name = strdupz(value);
+    if (!strcmp(name, "NETDATA_PROTOCOL_VERSION"))
+        return res;
+    else if(!strcmp(name, "NETDATA_CONTAINER_OS_NAME")){
+        freez(system_info->container_os_name);
+        system_info->container_os_name = strdupz(value);
     }
-    else if(!strcmp(name, "NETDATA_SYSTEM_OS_ID")){
-        freez(system_info->os_id);
-        system_info->os_id = strdupz(value);
+    else if(!strcmp(name, "NETDATA_CONTAINER_OS_ID")){
+        freez(system_info->container_os_id);
+        system_info->container_os_id = strdupz(value);
     }
-    else if(!strcmp(name, "NETDATA_SYSTEM_OS_ID_LIKE")){
-        freez(system_info->os_id_like);
-        system_info->os_id_like = strdupz(value);
+    else if(!strcmp(name, "NETDATA_CONTAINER_OS_ID_LIKE")){
+        freez(system_info->container_os_id_like);
+        system_info->container_os_id_like = strdupz(value);
     }
-    else if(!strcmp(name, "NETDATA_SYSTEM_OS_VERSION")){
-        freez(system_info->os_version);
-        system_info->os_version = strdupz(value);
+    else if(!strcmp(name, "NETDATA_CONTAINER_OS_VERSION")){
+        freez(system_info->container_os_version);
+        system_info->container_os_version = strdupz(value);
     }
-    else if(!strcmp(name, "NETDATA_SYSTEM_OS_VERSION_ID")){
-        freez(system_info->os_version_id);
-        system_info->os_version_id = strdupz(value);
+    else if(!strcmp(name, "NETDATA_CONTAINER_OS_VERSION_ID")){
+        freez(system_info->container_os_version_id);
+        system_info->container_os_version_id = strdupz(value);
     }
-    else if(!strcmp(name, "NETDATA_SYSTEM_OS_DETECTION")){
-        freez(system_info->os_detection);
-        system_info->os_detection = strdupz(value);
+    else if(!strcmp(name, "NETDATA_CONTAINER_OS_DETECTION")){
+        freez(system_info->host_os_detection);
+        system_info->host_os_detection = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_HOST_OS_NAME")){
+        freez(system_info->host_os_name);
+        system_info->host_os_name = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_HOST_OS_ID")){
+        freez(system_info->host_os_id);
+        system_info->host_os_id = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_HOST_OS_ID_LIKE")){
+        freez(system_info->host_os_id_like);
+        system_info->host_os_id_like = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_HOST_OS_VERSION")){
+        freez(system_info->host_os_version);
+        system_info->host_os_version = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_HOST_OS_VERSION_ID")){
+        freez(system_info->host_os_version_id);
+        system_info->host_os_version_id = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_HOST_OS_DETECTION")){
+        freez(system_info->host_os_detection);
+        system_info->host_os_detection = strdupz(value);
     }
     else if(!strcmp(name, "NETDATA_SYSTEM_KERNEL_NAME")){
         freez(system_info->kernel_name);
         system_info->kernel_name = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_SYSTEM_CPU_LOGICAL_CPU_COUNT")){
+        freez(system_info->host_cores);
+        system_info->host_cores = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_SYSTEM_CPU_FREQ")){
+        freez(system_info->host_cpu_freq);
+        system_info->host_cpu_freq = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_SYSTEM_TOTAL_RAM")){
+        freez(system_info->host_ram_total);
+        system_info->host_ram_total = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_SYSTEM_TOTAL_DISK_SIZE")){
+        freez(system_info->host_disk_space);
+        system_info->host_disk_space = strdupz(value);
     }
     else if(!strcmp(name, "NETDATA_SYSTEM_KERNEL_VERSION")){
         freez(system_info->kernel_version);
@@ -890,6 +1538,16 @@ int rrdhost_set_system_info_variable(struct rrdhost_system_info *system_info, ch
         freez(system_info->container_detection);
         system_info->container_detection = strdupz(value);
     }
+    else if (!strcmp(name, "NETDATA_SYSTEM_CPU_VENDOR"))
+        return res;
+    else if (!strcmp(name, "NETDATA_SYSTEM_CPU_MODEL"))
+        return res;
+    else if (!strcmp(name, "NETDATA_SYSTEM_CPU_DETECTION"))
+        return res;
+    else if (!strcmp(name, "NETDATA_SYSTEM_RAM_DETECTION"))
+        return res;
+    else if (!strcmp(name, "NETDATA_SYSTEM_DISK_DETECTION"))
+        return res;
     else {
         res = 1;
     }
@@ -935,4 +1593,19 @@ int alarm_compare_name(void *a, void *b) {
     else if(in1->hash > in2->hash) return 1;
 
     return strcmp(in1->name,in2->name);
+}
+
+// Added for gap-filling, if this proves to be a bottleneck in large-scale systems then we will need to cache
+// the last entry times as the metric updates, but let's see if it is a problem first.
+time_t rrdhost_last_entry_t(RRDHOST *h) {
+    rrdhost_rdlock(h);
+    RRDSET *st;
+    time_t result = 0;
+    rrdset_foreach_read(st, h) {
+        time_t st_last = rrdset_last_entry_t(st);
+        if (st_last > result)
+            result = st_last;
+    }
+    rrdhost_unlock(h);
+    return result;
 }

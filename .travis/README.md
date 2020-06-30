@@ -1,3 +1,10 @@
+<!--
+---
+title: "Description of CI build configuration"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/.travis/README.md
+---
+-->
+
 # Description of CI build configuration
 
 ## Variables needed by travis
@@ -23,7 +30,7 @@ Our main areas of concern are:
    That means a lot of testing, a lot of consistency checks, a lot of validations
 
 3) Generated artifacts consistency. We should not allow broken software to reach the public.
-   When this happens, it's embarassing and we struggle to eliminate it.
+   When this happens, it's embarrassing and we struggle to eliminate it.
 
 4) We are an innovative company, so we love to automate :)
 
@@ -38,7 +45,7 @@ Our CI/CD lifecycle contains three different execution entry points:
 3) A scheduled job runs on master once per day: Travis will run on master at the scheduled interval
 
 To accommodate all three entry points our CI/CD workflow has a set of steps that run on all three entry points.
-Once all these steps are successfull, then our pipeline executes another subset of steps for entry points 2 and 3.
+Once all these steps are successful, then our pipeline executes another subset of steps for entry points 2 and 3.
 In travis terms the "steps" are "Stages" and within each stage we execute a set of activities called "jobs" in travis.
 
 ### Always run: Stages that running on all three execution entry points
@@ -63,11 +70,10 @@ that our product meets certain epxectations. At the current stage, we are focusi
 like installing in different distributions, running the full lifecycle of install-run-update-install and so on.
 We are still working on enriching this with more and more use cases, to get us closer to achieving full stability of our software.
 Briefly we currently evaluate the following activities:
-- Basic software unit testing
+- Basic software unit testing (only run when changes happen that require it)
 - Non containerized build and install on ubuntu 14.04
 - Non containerized build and install on ubuntu 18.04
 - Running the full Netdata lifecycle (install, update, uninstall) on ubuntu 18.04
-- Build and install on CentOS 6
 - Build and install on CentOS 7
 (More to come)
 
@@ -126,7 +132,7 @@ The following distributions are supported
   - Version 29
   - Version 28
 
-- OpenSuSE versions
+- openSUSE versions
   - 15.1
   - 15.0
 

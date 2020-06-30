@@ -9,7 +9,48 @@ struct health_cmdapi_thread_status {
 };
 
 unsigned int default_health_enabled = 1;
+char *silencers_filename;
 
+// the queue of executed alarm notifications that haven't been waited for yet
+static struct {
+    ALARM_ENTRY *head; // oldest
+    ALARM_ENTRY *tail; // latest
+} alarm_notifications_in_progress = {NULL, NULL};
+
+static inline void enqueue_alarm_notify_in_progress(ALARM_ENTRY *ae)
+{
+    ae->prev_in_progress = NULL;
+    ae->next_in_progress = NULL;
+
+    if (NULL != alarm_notifications_in_progress.tail) {
+        ae->prev_in_progress = alarm_notifications_in_progress.tail;
+        alarm_notifications_in_progress.tail->next_in_progress = ae;
+    }
+    if (NULL == alarm_notifications_in_progress.head) {
+        alarm_notifications_in_progress.head = ae;
+    }
+    alarm_notifications_in_progress.tail = ae;
+
+}
+
+static inline void unlink_alarm_notify_in_progress(ALARM_ENTRY *ae)
+{
+    struct alarm_entry *prev = ae->prev_in_progress;
+    struct alarm_entry *next = ae->next_in_progress;
+
+    if (NULL != prev) {
+        prev->next_in_progress = next;
+    }
+    if (NULL != next) {
+        next->prev_in_progress = prev;
+    }
+    if (ae == alarm_notifications_in_progress.head) {
+        alarm_notifications_in_progress.head = next;
+    }
+    if (ae == alarm_notifications_in_progress.tail) {
+        alarm_notifications_in_progress.tail = prev;
+    }
+}
 // ----------------------------------------------------------------------------
 // health initialization
 
@@ -70,7 +111,7 @@ void health_silencers_init(void) {
         }
         fclose(fd);
     } else {
-        error("Cannot open the file %s",silencers_filename);
+        info("Cannot open the file %s, so Netdata will work with the default health configuration.",silencers_filename);
     }
 }
 
@@ -152,6 +193,9 @@ void health_reload_host(RRDHOST *host) {
     rrdhost_wrlock(host);
     health_readdir(host, user_path, stock_path, NULL);
 
+    //Discard alarms with labels that do not apply to host
+    rrdcalc_labels_unlink_alarm_from_host(host);
+
     // link the loaded alarms to their charts
     RRDDIM *rd;
     rrdset_foreach_write(st, host) {
@@ -175,7 +219,10 @@ void health_reload_host(RRDHOST *host) {
  * Reload the host configuration for all hosts.
  */
 void health_reload(void) {
-
+#ifdef ENABLE_ACLK
+    if (netdata_cloud_setting)
+        aclk_single_update_disable();
+#endif
     rrd_rdlock();
 
     RRDHOST *host;
@@ -183,6 +230,12 @@ void health_reload(void) {
         health_reload_host(host);
 
     rrd_unlock();
+#ifdef ENABLE_ACLK
+    if (netdata_cloud_setting) {
+        aclk_single_update_enable();
+        aclk_alarm_reload();
+    }
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -252,7 +305,6 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
     }
 
     static char command_to_run[ALARM_EXEC_COMMAND_LENGTH + 1];
-    pid_t command_pid;
 
     const char *exec      = (ae->exec)      ? ae->exec      : host->health_default_exec;
     const char *recipient = (ae->recipient) ? ae->recipient : host->health_default_recipient;
@@ -308,25 +360,30 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
     );
 
     ae->flags |= HEALTH_ENTRY_FLAG_EXEC_RUN;
-    ae->exec_run_timestamp = now_realtime_sec();
+    ae->exec_run_timestamp = now_realtime_sec(); /* will be updated by real time after spawning */
 
     debug(D_HEALTH, "executing command '%s'", command_to_run);
-    FILE *fp = mypopen(command_to_run, &command_pid);
-    if(!fp) {
-        error("HEALTH: Cannot popen(\"%s\", \"r\").", command_to_run);
-        goto done;
-    }
-    debug(D_HEALTH, "HEALTH reading from command (discarding command's output)");
-    char buffer[100 + 1];
-    while(fgets(buffer, 100, fp) != NULL) ;
-    ae->exec_code = mypclose(fp, command_pid);
+    ae->flags |= HEALTH_ENTRY_FLAG_EXEC_IN_PROGRESS;
+    ae->exec_spawn_serial = spawn_enq_cmd(command_to_run);
+    enqueue_alarm_notify_in_progress(ae);
+
+    return; //health_alarm_wait_for_execution
+done:
+    health_alarm_log_save(host, ae);
+}
+
+static inline void health_alarm_wait_for_execution(ALARM_ENTRY *ae) {
+    if (!(ae->flags & HEALTH_ENTRY_FLAG_EXEC_IN_PROGRESS))
+        return;
+
+    spawn_wait_cmd(ae->exec_spawn_serial, &ae->exec_code, &ae->exec_run_timestamp);
     debug(D_HEALTH, "done executing command - returned with code %d", ae->exec_code);
+    ae->flags &= ~HEALTH_ENTRY_FLAG_EXEC_IN_PROGRESS;
 
     if(ae->exec_code != 0)
         ae->flags |= HEALTH_ENTRY_FLAG_EXEC_FAILED;
 
-done:
-    health_alarm_log_save(host, ae);
+    unlink_alarm_notify_in_progress(ae);
 }
 
 static inline void health_process_notifications(RRDHOST *host, ALARM_ENTRY *ae) {
@@ -388,6 +445,7 @@ static inline void health_alarm_log_process(RRDHOST *host) {
         ALARM_ENTRY *t = ae->next;
 
         if(likely(!alarm_entry_isrepeating(host, ae))) {
+            health_alarm_wait_for_execution(ae);
             health_alarm_log_free_one_nochecks_nounlink(ae);
             host->health_log.count--;
         }
@@ -427,6 +485,11 @@ static inline int rrdcalc_isrunnable(RRDCALC *rc, time_t now, time_t *next_run) 
 
     if(unlikely(!rrdset_flag_check(rc->rrdset, RRDSET_FLAG_ENABLED))) {
         debug(D_HEALTH, "Health not running alarm '%s.%s'. The chart is not enabled", rc->chart?rc->chart:"NOCHART", rc->name);
+        return 0;
+    }
+
+    if(unlikely(rrdset_flag_check(rc->rrdset, RRDSET_FLAG_ARCHIVED))) {
+        debug(D_HEALTH, "Health not running alarm '%s.%s'. The chart has been marked as archived", rc->chart?rc->chart:"NOCHART", rc->name);
         return 0;
     }
 
@@ -576,6 +639,8 @@ void *health_main(void *ptr) {
 
     time_t now                = now_realtime_sec();
     time_t hibernation_delay  = config_get_number(CONFIG_SECTION_HEALTH, "postpone alarms during hibernation for seconds", 60);
+
+    rrdcalc_labels_unlink();
 
     unsigned int loop = 0;
     while(!netdata_exit) {
@@ -930,6 +995,7 @@ void *health_main(void *ptr) {
                         rc->rrdcalc_flags |= RRDCALC_FLAG_RUN_ONCE;
                         health_process_notifications(host, ae);
                         debug(D_HEALTH, "Notification sent for the repeating alarm %u.", ae->alarm_id);
+                        health_alarm_wait_for_execution(ae);
                         health_alarm_log_free_one_nochecks_nounlink(ae);
                     }
                 }
@@ -944,10 +1010,22 @@ void *health_main(void *ptr) {
             // and cleanup
             health_alarm_log_process(host);
 
-            if (unlikely(netdata_exit))
+            if (unlikely(netdata_exit)) {
+                // wait for all notifications to finish before allowing health to be cleaned up
+                ALARM_ENTRY *ae;
+                while (NULL != (ae = alarm_notifications_in_progress.head)) {
+                    health_alarm_wait_for_execution(ae);
+                }
                 break;
+            }
 
         } /* rrdhost_foreach */
+
+        // wait for all notifications to finish before allowing health to be cleaned up
+        ALARM_ENTRY *ae;
+        while (NULL != (ae = alarm_notifications_in_progress.head)) {
+            health_alarm_wait_for_execution(ae);
+        }
 
         rrd_unlock();
 

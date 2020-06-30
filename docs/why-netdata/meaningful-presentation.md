@@ -1,3 +1,10 @@
+<!--
+---
+title: "Meaningful presentation"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/docs/why-netdata/meaningful-presentation.md
+---
+-->
+
 # Meaningful presentation
 
 Metrics are a lot more than name-value pairs over time. It is just not practical to require from all users to have a deep understanding of all metrics for monitoring their systems and applications.
@@ -26,7 +33,7 @@ The monitoring industry believes there is this "IT Operations Hero", a person co
 
 1.  Has a deep understanding of IT architectures and is a skillful SysAdmin.
 2.  Is a superb Network Administrator (can even read and understand the Linux kernel networking stack).
-3.  Is a exceptional database administrator.
+3.  Is an exceptional database administrator.
 4.  Is fluent in software engineering, capable of understanding the internal workings of applications.
 5.  Masters Data Science, statistical algorithms and is fluent in writing advanced mathematical queries to reveal the meaning of metrics.
 

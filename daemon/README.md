@@ -1,12 +1,20 @@
+<!--
+---
+title: "Netdata daemon"
+date: 2020-04-29
+custom_edit_url: https://github.com/netdata/netdata/edit/master/daemon/README.md
+---
+-->
+
 # Netdata daemon
 
 ## Starting netdata
 
 -   You can start Netdata by executing it with `/usr/sbin/netdata` (the installer will also start it).
 
--   You can stop Netdata by killing it with `killall netdata`. You can stop and start Netdata at any point. Netdata
-    saves on exit its round robbin database to `/var/cache/netdata` so that it will continue from where it stopped the
-    last time.
+-   You can stop Netdata by killing it with `killall netdata`. You can stop and start Netdata at any point. When
+    exiting, the [database engine](/database/engine/README.md) saves metrics to `/var/cache/netdata/dbengine/` so that
+    it can continue when started again.
 
 Access to the web site, for all graphs, is by default on port `19999`, so go to:
 
@@ -110,15 +118,15 @@ The command line options of the Netdata 1.10.0 version are the following:
  |   '-'   '-'   '-'   '-'   real-time performance monitoring, done right!   
  +----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+--->
 
- Copyright (C) 2016-2017, Costa Tsaousis <costa@tsaousis.gr>
+ Copyright (C) 2016-2020, Netdata, Inc. <info@netdata.cloud>
  Released under GNU General Public License v3 or later.
  All rights reserved.
 
- Home Page  : https://my-netdata.io
+ Home Page  : https://netdata.cloud
  Source Code: https://github.com/netdata/netdata
- Wiki / Docs: https://github.com/netdata/netdata/wiki
+ Docs       : https://learn.netdata.cloud
  Support    : https://github.com/netdata/netdata/issues
- License    : https://github.com/netdata/netdata/blob/master/LICENSE
+ License    : https://github.com/netdata/netdata/blob/master/LICENSE.md
 
  Twitter    : https://twitter.com/linuxnetdata
  Facebook   : https://www.facebook.com/linuxnetdata/
@@ -177,6 +185,8 @@ The command line options of the Netdata 1.10.0 version are the following:
   -W simple-pattern pattern string
                            Check if string matches pattern and exit.
 
+  -W "claim -token=TOKEN -rooms=ROOM1,ROOM2 url=https://app.netdata.cloud"
+                           Claim the agent to the workspace rooms pointed to by TOKEN and ROOM*.
 
  Signals netdata handles:
 
@@ -184,6 +194,8 @@ The command line options of the Netdata 1.10.0 version are the following:
   - USR1                   Save internal DB to disk.
   - USR2                   Reload health configuration.
 ```
+
+You can send commands during runtime via [netdatacli](/cli/README.md).
 
 ## Log files
 
@@ -305,14 +317,14 @@ You can set Netdata scheduling policy in `netdata.conf`, like this:
 
 You can use the following:
 
-| policy                    | description |                                                                                                                 
-|:----:|:----------|
-| `idle`                    | use CPU only when there is spare - this is lower than nice 19 - it is the default for Netdata and it is so low that Netdata will run in "slow motion" under extreme system load, resulting in short (1-2 seconds) gaps at the charts. | 
-| `other`<br/>or<br/>`nice` | this is the default policy for all processes under Linux. It provides dynamic priorities based on the `nice` level of each process. Check below for setting this `nice` level for netdata. |
+| policy                    | description                                                                                                                                                                                                                                                                                                                                                                                                              |                              
+| :-----------------------: | :----------                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `idle`                    | use CPU only when there is spare - this is lower than nice 19 - it is the default for Netdata and it is so low that Netdata will run in "slow motion" under extreme system load, resulting in short (1-2 seconds) gaps at the charts.                                                                                                                                                                                    | 
+| `other`<br/>or<br/>`nice` | this is the default policy for all processes under Linux. It provides dynamic priorities based on the `nice` level of each process. Check below for setting this `nice` level for netdata.                                                                                                                                                                                                                               |
 | `batch`                   | This policy is similar to `other` in that it schedules the thread according to its dynamic priority (based on the `nice` value).  The difference is that this policy will cause the scheduler to always assume that the thread is CPU-intensive.  Consequently, the scheduler will  apply a small scheduling penalty with respect to wake-up behavior, so that this thread is mildly disfavored in scheduling decisions. |
-| `fifo`                    | `fifo` can be used only with static priorities higher than 0, which means that when a `fifo` threads becomes runnable, it will always  immediately  preempt  any  currently running  `other`, `batch`, or `idle` thread.  `fifo` is a simple scheduling algorithm without time slicing. |
-| `rr`                      | a simple enhancement of `fifo`.  Everything described above for `fifo` also applies to `rr`, except that each thread is allowed to run only for a  maximum time quantum. |
-| `keep`<br/>or<br/>`none`  | do not set scheduling policy, priority or nice level - i.e. keep running with whatever it is set already (e.g. by systemd). |
+| `fifo`                    | `fifo` can be used only with static priorities higher than 0, which means that when a `fifo` threads becomes runnable, it will always  immediately  preempt  any  currently running  `other`, `batch`, or `idle` thread.  `fifo` is a simple scheduling algorithm without time slicing.                                                                                                                                  |
+| `rr`                      | a simple enhancement of `fifo`.  Everything described above for `fifo` also applies to `rr`, except that each thread is allowed to run only for a  maximum time quantum.                                                                                                                                                                                                                                                 |
+| `keep`<br/>or<br/>`none`  | do not set scheduling policy, priority or nice level - i.e. keep running with whatever it is set already (e.g. by systemd).                                                                                                                                                                                                                                                                                              |
 
 For more information see `man sched`.
 
@@ -476,8 +488,8 @@ When you compile Netdata with debugging:
 2.  a lot of code is added all over netdata, to log debug messages to `/var/log/netdata/debug.log`. However, nothing is
     printed by default. Netdata allows you to select which sections of Netdata you want to trace. Tracing is activated
     via the config option `debug flags`. It accepts a hex number, to enable or disable specific sections. You can find
-    the options supported at [log.h](../libnetdata/log/log.h). They are the `D_*` defines. The value
-    `0xffffffffffffffff` will enable all possible debug flags.
+    the options supported at [log.h](https://raw.githubusercontent.com/netdata/netdata/master/libnetdata/log/log.h).
+    They are the `D_*` defines. The value `0xffffffffffffffff` will enable all possible debug flags.
 
 Once Netdata is compiled with debugging and tracing is enabled for a few sections, the file `/var/log/netdata/debug.log`
 will contain the messages.

@@ -1,3 +1,10 @@
+<!--
+---
+title: "Contributing"
+custom_edit_url: https://github.com/netdata/netdata/edit/master/CONTRIBUTING.md
+---
+-->
+
 # Contributing
 
 Thank you for considering contributing to Netdata.
@@ -7,7 +14,7 @@ We love to receive contributions. Maintaining a platform for monitoring everythi
 There are many ways to contribute, with varying requirements of skills, explained in detail in the following sections. 
 Specific GitHub issues we need help with can be seen [here](https://github.com/netdata/netdata/issues?q=is%3Aissue+is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22). Some of them are also labeled as "good first issue". 
 
-## All NetData Users
+## All Netdata Users
 
 ### Give Netdata a GitHub star
 
@@ -68,7 +75,7 @@ Our documentation is in need of constant improvement and expansion. As Netdata's
 
 We also need to produce beginner-level tutorials on using Netdata to monitor common applications, web servers, and more.
 
-Start with the [guide for contributing to documentation](docs/contributing/contributing-documentation.md), and then review the [documentation style guide](docs/contributing/style-guide.md) for specifics on how we write our documentation.
+Start with the [guide for contributing to documentation](/docs/contributing/contributing-documentation.md), and then review the [documentation style guide](/docs/contributing/style-guide.md) for specifics on how we write our documentation.
 
 Don't be afraid to submit a pull request with your corrections or additions! We need a lot of help and are willing to guide new contributors through the process.
 
@@ -76,7 +83,7 @@ Don't be afraid to submit a pull request with your corrections or additions! We 
 
 We expect most contributions to be for new data collection plugins. You can read about how external plugins work [here](collectors/plugins.d/). Additional instructions are available for [Node.js plugins](collectors/node.d.plugin) and [Python plugins](collectors/python.d.plugin).
 
-Of course we appreciate contributions for any other part of the NetData agent, including the [daemon](daemon), [backends for long term archiving](backends/), innovative ways of using the [REST API](web/api) to create cool [Custom Dashboards](web/gui/custom/) or to include NetData charts in other applications, similarly to what can be done with [Confluence](web/gui/confluence/).
+Of course we appreciate contributions for any other part of the Netdata agent, including the [daemon](daemon), [backends for long term archiving](backends/), innovative ways of using the [REST API](web/api) to create cool [Custom Dashboards](web/gui/custom/) or to include Netdata charts in other applications, similarly to what can be done with [Confluence](web/gui/confluence/).
 
 If you are working on the C source code please be aware that we have a standard build configuration that we use. This
 is meant to keep the source tree clean and free of warnings. When you are preparing to work on the code:
@@ -165,7 +172,7 @@ We use several different languages and have had contributions from several peopl
 For C contributions in particular, we try to respect the [Linux kernel style](https://www.kernel.org/doc/html/v4.10/process/coding-style.html), with the following exceptions:
 
 -   Use 4 space indentation instead of 8
--   We occassionally have multiple statements on a single line (e.g. `if (a) b;`)
+-   We occasionally have multiple statements on a single line (e.g. `if (a) b;`)
 -   Allow max line length of 120 chars 
 -   Allow opening brace at the end of a function declaration: `function() {`. 
 -   Allow trailing comments
@@ -180,6 +187,45 @@ There are several guides for pull requests, such as the following:
 However, it's not always that simple. Our [PR approval process](#pr-approval-process) and the several merges we do every day may cause your fork to get behind the Netdata master. If you worked on something that has changed in the meantime, you will be required to do a git rebase, to bring your fork to the correct state. A very easy to follow guide on how to do it without learning all the intricacies of GitHub can be found [here](https://medium.com/@ruthmpardee/git-fork-workflow-using-rebase-587a144be470)
 
 One thing you will need to do only for your first pull request in Netdata is to accept the CLA. Until you do, the automated check for the CLA acceptance will be showing as failed. 
+
+#### PR Guidelines
+
+PR Titles:
+
+- Must follow the [Imperative Mood](https://en.wikipedia.org/wiki/Imperative_mood)
+- Must be no more than ~50 characters (_longer description in the PR_)
+
+PR Descriptions:
+
+- Must clearly contain sufficient information regarding the content of the PR, including area/component, test plan, etc.
+- Must reference an existing issue.
+
+Some PR title examples:
+
+- Fix bug in Netdata installer for FreeBSD 11.2
+- Update docs for other installation methods
+- Add new collector for Prometheus endpoints
+- Add 4.19 Kernel variant for eBPF
+- Fix typo in README
+- Refactor code for better maintainability
+- etc
+
+The key idea here is to start with a "verb" of what you are doing in the PR.
+
+For good examples have a look at other projects like:
+
+- https://github.com/facebook/react/commits/master
+- https://github.com/tensorflow/tensorflow/commits/master
+- https://github.com/vuejs/vue/commits/dev
+- https://github.com/microsoft/vscode/commits/master
+- Also see the Linux Kernel and Git projects as well as good examples.
+
+#### Commit messages when PRs are merged
+
+When a PR gets squashed and merged into master, the title of the commit message (first line) must be the PR title
+followed by the PR number.
+
+The body of the commit message should be a short description of the work, preferably taken from the connected issue.
 
 ### PR approval process
 
